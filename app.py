@@ -308,6 +308,7 @@ def create_video_with_banner(
                 cmd += ["-map", "0:a", "-c:a", "aac", "-b:a", "128k"]
             cmd += [
                 "-t", f"{duration:.3f}",
+                "-r", "30",
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "20",
