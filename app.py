@@ -221,9 +221,9 @@ def create_video_with_banner(
             f"overlay=({text_overlay_x},{text_overlay_y}) vid_pos=({vid_x},{vid_y})"
         )
 
-        # Build full 1080x1920 background with Pillow (text + card area),
-        # then use lavfi color source as the timing driver to avoid all
-        # -loop / shortest / eof issues across FFmpeg versions.
+        # Build full 1080x1920 background with Pillow, then convert to
+        # a real H.264 video via raw pixel pipe (no image file input to
+        # FFmpeg at all — avoids all -loop / overlay / eof bugs in FFmpeg 7.x).
         from PIL import Image as PILImage, ImageDraw as PILDraw
         bg = PILImage.new("RGB", (OUTPUT_W, OUTPUT_H), (0, 0, 0))
         text_img = PILImage.open(text_png_path).convert("RGB")
@@ -240,24 +240,43 @@ def create_video_with_banner(
             [card_x, sep_y, card_x + card_w, sep_y + 2],
             fill=border_col,
         )
+        bg_bytes = bg.tobytes()
 
-        _, full_bg_path = tempfile.mkstemp(suffix=".png", prefix="tweet_bg_")
+        _, bg_vid_path = tempfile.mkstemp(suffix=".mp4", prefix="tweet_bg_")
         try:
-            bg.save(full_bg_path, "PNG")
-            app.logger.info(f"Full background saved: {full_bg_path}")
+            bg_proc = subprocess.Popen(
+                [
+                    "ffmpeg", "-y", "-hide_banner",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{OUTPUT_W}x{OUTPUT_H}",
+                    "-r", "1", "-i", "pipe:0",
+                    "-frames:v", "1",
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    bg_vid_path,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            bg_proc.stdin.write(bg_bytes)
+            bg_proc.stdin.close()
+            bg_proc.wait(timeout=30)
+            if bg_proc.returncode != 0:
+                raise RuntimeError(f"BG video error: {bg_proc.stderr.read().decode()[-500:]}")
+            app.logger.info(f"Background video created: {bg_vid_path}")
 
-            fps = 30
             filter_complex = (
-                f"color=c=black:s={OUTPUT_W}x{OUTPUT_H}:d={duration}:r={fps}[base];"
-                f"[base][1:v]overlay=0:0[with_bg];"
-                f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
-                f"[with_bg][vid]overlay={vid_x}:{vid_y}[out]"
+                f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[bg];"
+                f"[0:v]fps=30,scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
+                f"[bg][vid]overlay={vid_x}:{vid_y}[out]"
             )
 
             cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-y", "-hide_banner",
                 "-i", input_video,
-                "-i", full_bg_path,
+                "-i", bg_vid_path,
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
                 "-map", "0:a?",
@@ -275,10 +294,17 @@ def create_video_with_banner(
             app.logger.info(f"FFmpeg cmd: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
-                app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
-                raise RuntimeError(f"FFmpeg error: {result.stderr[-2000:]}")
+                err = result.stderr
+                error_lines = [l for l in err.split("\n") if any(
+                    k in l.lower() for k in ["error", "invalid", "cannot", "failed", "no such"]
+                )]
+                app.logger.error(f"FFmpeg ERRORS: {error_lines}")
+                app.logger.error(f"FFmpeg stderr START:\n{err[:1500]}")
+                app.logger.error(f"FFmpeg stderr END:\n{err[-1000:]}")
+                summary = "\n".join(error_lines) if error_lines else err[-1500:]
+                raise RuntimeError(f"FFmpeg error: {summary}")
         finally:
-            Path(full_bg_path).unlink(missing_ok=True)
+            Path(bg_vid_path).unlink(missing_ok=True)
     finally:
         Path(text_png_path).unlink(missing_ok=True)
 
@@ -312,6 +338,75 @@ def healthcheck():
     except Exception as e:
         info["render"] = str(e)
     return jsonify(info)
+
+
+@app.route("/api/ffmpeg-test")
+def ffmpeg_test():
+    """Run a minimal overlay pipeline and return full stderr for debugging."""
+    from PIL import Image as PILImage
+    results = {}
+
+    _, bg_vid = tempfile.mkstemp(suffix=".mp4")
+    _, src_vid = tempfile.mkstemp(suffix=".mp4")
+    _, out_vid = tempfile.mkstemp(suffix=".mp4")
+
+    try:
+        # 1. Create a 1-frame bg video from raw pixels
+        frame = PILImage.new("RGB", (320, 240), (255, 0, 0))
+        p1 = subprocess.Popen(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "320x240",
+             "-r", "1", "-i", "pipe:0", "-frames:v", "1",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", bg_vid],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        p1.stdin.write(frame.tobytes())
+        p1.stdin.close()
+        p1.wait(timeout=15)
+        results["step1_bg_video"] = {
+            "rc": p1.returncode,
+            "stderr": p1.stderr.read().decode()[-500:],
+        }
+
+        # 2. Create a 3-second synthetic source video
+        r2 = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=25",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             src_vid],
+            capture_output=True, text=True, timeout=15,
+        )
+        results["step2_src_video"] = {"rc": r2.returncode, "stderr": r2.stderr[-300:]}
+
+        # 3. Test the overlay pipeline (loop bg + overlay src on top)
+        fc = (
+            "[1:v]loop=-1:size=1:start=0,setpts=N/25/TB[bg];"
+            "[0:v]scale=160:120,setsar=1[vid];"
+            "[bg][vid]overlay=80:60[out]"
+        )
+        r3 = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-i", src_vid, "-i", bg_vid,
+             "-filter_complex", fc,
+             "-map", "[out]", "-t", "3",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             out_vid],
+            capture_output=True, text=True, timeout=30,
+        )
+        results["step3_overlay"] = {
+            "rc": r3.returncode,
+            "stderr_start": r3.stderr[:1500],
+            "stderr_end": r3.stderr[-500:],
+            "errors": [l for l in r3.stderr.split("\n") if "error" in l.lower() or "invalid" in l.lower()],
+        }
+    except Exception as e:
+        results["exception"] = str(e)
+    finally:
+        for p in [bg_vid, src_vid, out_vid]:
+            Path(p).unlink(missing_ok=True)
+
+    return jsonify(results)
 
 
 @app.route("/api/process", methods=["POST"])
