@@ -6,12 +6,24 @@ import json
 import subprocess
 import tempfile
 import textwrap
+import time
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file, render_template
 import deepl
 
 app = Flask(__name__)
+
+# #region agent log
+DEBUG_LOG = Path(__file__).resolve().parent / ".cursor" / "debug.log"
+def _dlog(msg, data=None, hyp="", loc=""):
+    try:
+        DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        entry = {"timestamp": int(time.time()*1000), "message": msg, "location": loc, "hypothesisId": hyp}
+        if data is not None: entry["data"] = data
+        with open(DEBUG_LOG, "a") as f: f.write(json.dumps(entry) + "\n")
+    except Exception: pass
+# #endregion
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp"
@@ -263,9 +275,13 @@ def create_video_with_banner(
             bg_proc.stdin.write(bg_bytes)
             bg_proc.stdin.close()
             bg_proc.wait(timeout=30)
+            bg_stderr = bg_proc.stderr.read().decode()
+            # #region agent log
+            bg_vid_size = Path(bg_vid_path).stat().st_size if Path(bg_vid_path).exists() else 0
+            _dlog("bg_video_created", {"rc": bg_proc.returncode, "size": bg_vid_size, "stderr": bg_stderr[-300:]}, hyp="B", loc="app.py:bg_creation")
+            # #endregion
             if bg_proc.returncode != 0:
-                raise RuntimeError(f"BG video error: {bg_proc.stderr.read().decode()[-500:]}")
-            app.logger.info(f"Background video created: {bg_vid_path}")
+                raise RuntimeError(f"BG video error: {bg_stderr[-500:]}")
 
             filter_complex = (
                 f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[bg];"
@@ -291,16 +307,18 @@ def create_video_with_banner(
                 output_path,
             ]
 
-            app.logger.info(f"FFmpeg cmd: {' '.join(cmd)}")
+            # #region agent log
+            _dlog("ffmpeg_main_cmd", {"filter": filter_complex, "duration": duration, "vid_w": vid_w, "vid_h": vid_h}, hyp="A,C,D", loc="app.py:main_ffmpeg")
+            # #endregion
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 err = result.stderr
                 error_lines = [l for l in err.split("\n") if any(
-                    k in l.lower() for k in ["error", "invalid", "cannot", "failed", "no such"]
+                    k in l.lower() for k in ["error", "invalid", "cannot", "failed", "no such", "discarding"]
                 )]
-                app.logger.error(f"FFmpeg ERRORS: {error_lines}")
-                app.logger.error(f"FFmpeg stderr START:\n{err[:1500]}")
-                app.logger.error(f"FFmpeg stderr END:\n{err[-1000:]}")
+                # #region agent log
+                _dlog("ffmpeg_failed", {"rc": result.returncode, "error_lines": error_lines[:10], "stderr_start": err[:2000], "stderr_end": err[-500:]}, hyp="A,C,D,E", loc="app.py:ffmpeg_error")
+                # #endregion
                 summary = "\n".join(error_lines) if error_lines else err[-1500:]
                 raise RuntimeError(f"FFmpeg error: {summary}")
         finally:
@@ -342,16 +360,19 @@ def healthcheck():
 
 @app.route("/api/ffmpeg-test")
 def ffmpeg_test():
-    """Run a minimal overlay pipeline and return full stderr for debugging."""
+    """Comprehensive FFmpeg overlay test — returns full stderr for each step."""
     from PIL import Image as PILImage
     results = {}
+    tmp_files = []
 
-    _, bg_vid = tempfile.mkstemp(suffix=".mp4")
-    _, src_vid = tempfile.mkstemp(suffix=".mp4")
-    _, out_vid = tempfile.mkstemp(suffix=".mp4")
+    def mktmp(suffix):
+        _, p = tempfile.mkstemp(suffix=suffix)
+        tmp_files.append(p)
+        return p
 
     try:
-        # 1. Create a 1-frame bg video from raw pixels
+        # --- Hyp A/B: Create 1-frame bg video from raw pixels ---
+        bg_vid = mktmp(".mp4")
         frame = PILImage.new("RGB", (320, 240), (255, 0, 0))
         p1 = subprocess.Popen(
             ["ffmpeg", "-y", "-hide_banner",
@@ -364,46 +385,107 @@ def ffmpeg_test():
         p1.stdin.write(frame.tobytes())
         p1.stdin.close()
         p1.wait(timeout=15)
+        bg_size = Path(bg_vid).stat().st_size if Path(bg_vid).exists() else 0
         results["step1_bg_video"] = {
             "rc": p1.returncode,
+            "file_size": bg_size,
             "stderr": p1.stderr.read().decode()[-500:],
         }
 
-        # 2. Create a 3-second synthetic source video
+        # --- Hyp C: Create 3s synthetic video (like a Twitter vid) ---
+        src_vid = mktmp(".mp4")
         r2 = subprocess.run(
             ["ffmpeg", "-y", "-hide_banner",
-             "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=25",
+             "-f", "lavfi", "-i", "testsrc=duration=3:size=640x360:rate=25",
              "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
              src_vid],
             capture_output=True, text=True, timeout=15,
         )
-        results["step2_src_video"] = {"rc": r2.returncode, "stderr": r2.stderr[-300:]}
+        results["step2_src_video"] = {"rc": r2.returncode}
 
-        # 3. Test the overlay pipeline (loop bg + overlay src on top)
-        fc = (
+        # --- Hyp A: Test loop filter on 1-frame video ---
+        loop_out = mktmp(".mp4")
+        r_loop = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-i", bg_vid,
+             "-vf", "loop=-1:size=1:start=0,setpts=N/25/TB",
+             "-t", "2", "-c:v", "libx264", "-preset", "ultrafast",
+             "-pix_fmt", "yuv420p", loop_out],
+            capture_output=True, text=True, timeout=15,
+        )
+        results["step3_loop_only"] = {
+            "rc": r_loop.returncode,
+            "stderr_full": r_loop.stderr[:2000],
+            "errors": [l for l in r_loop.stderr.split("\n")
+                       if any(k in l.lower() for k in ["error", "invalid", "failed"])],
+        }
+
+        # --- Hyp A+D: Full overlay pipeline at small scale ---
+        out_small = mktmp(".mp4")
+        fc_small = (
             "[1:v]loop=-1:size=1:start=0,setpts=N/25/TB[bg];"
-            "[0:v]scale=160:120,setsar=1[vid];"
+            "[0:v]fps=25,scale=160:120,setsar=1[vid];"
             "[bg][vid]overlay=80:60[out]"
         )
         r3 = subprocess.run(
             ["ffmpeg", "-y", "-hide_banner",
              "-i", src_vid, "-i", bg_vid,
-             "-filter_complex", fc,
+             "-filter_complex", fc_small,
              "-map", "[out]", "-t", "3",
-             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-             out_vid],
+             "-c:v", "libx264", "-preset", "ultrafast",
+             "-pix_fmt", "yuv420p", out_small],
             capture_output=True, text=True, timeout=30,
         )
-        results["step3_overlay"] = {
+        results["step4_overlay_small"] = {
             "rc": r3.returncode,
-            "stderr_start": r3.stderr[:1500],
-            "stderr_end": r3.stderr[-500:],
-            "errors": [l for l in r3.stderr.split("\n") if "error" in l.lower() or "invalid" in l.lower()],
+            "stderr_full": r3.stderr[:2500],
+            "errors": [l for l in r3.stderr.split("\n")
+                       if any(k in l.lower() for k in ["error", "invalid", "failed"])],
         }
+
+        # --- Hyp E: Full-size overlay (1080x1920) ---
+        bg_vid_big = mktmp(".mp4")
+        frame_big = PILImage.new("RGB", (1080, 1920), (0, 0, 0))
+        p_big = subprocess.Popen(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1080x1920",
+             "-r", "1", "-i", "pipe:0", "-frames:v", "1",
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", bg_vid_big],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        p_big.stdin.write(frame_big.tobytes())
+        p_big.stdin.close()
+        p_big.wait(timeout=30)
+        bg_big_size = Path(bg_vid_big).stat().st_size if Path(bg_vid_big).exists() else 0
+
+        out_big = mktmp(".mp4")
+        fc_big = (
+            "[1:v]loop=-1:size=1:start=0,setpts=N/25/TB[bg];"
+            "[0:v]fps=25,scale=540:960,setsar=1[vid];"
+            "[bg][vid]overlay=270:480[out]"
+        )
+        r4 = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner",
+             "-i", src_vid, "-i", bg_vid_big,
+             "-filter_complex", fc_big,
+             "-map", "[out]", "-t", "3",
+             "-c:v", "libx264", "-preset", "ultrafast",
+             "-pix_fmt", "yuv420p", out_big],
+            capture_output=True, text=True, timeout=60,
+        )
+        results["step5_overlay_fullsize"] = {
+            "rc": r4.returncode,
+            "bg_file_size": bg_big_size,
+            "stderr_full": r4.stderr[:2500],
+            "errors": [l for l in r4.stderr.split("\n")
+                       if any(k in l.lower() for k in ["error", "invalid", "failed"])],
+        }
+
     except Exception as e:
         results["exception"] = str(e)
     finally:
-        for p in [bg_vid, src_vid, out_vid]:
+        for p in tmp_files:
             Path(p).unlink(missing_ok=True)
 
     return jsonify(results)
