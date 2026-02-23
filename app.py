@@ -310,6 +310,12 @@ def create_video_with_banner(
             # #region agent log
             _dlog("ffmpeg_main_cmd", {"filter": filter_complex, "duration": duration, "vid_w": vid_w, "vid_h": vid_h}, hyp="A,C,D", loc="app.py:main_ffmpeg")
             # #endregion
+
+            # Capture input video properties for diagnostics
+            probe_cmd = ["ffprobe", "-v", "error", "-show_format", "-show_streams", "-of", "json", input_video]
+            probe_r = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+            input_probe = probe_r.stdout[:2000] if probe_r.returncode == 0 else f"ffprobe failed: {probe_r.stderr[:300]}"
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode != 0:
                 err = result.stderr
@@ -319,8 +325,14 @@ def create_video_with_banner(
                 # #region agent log
                 _dlog("ffmpeg_failed", {"rc": result.returncode, "error_lines": error_lines[:10], "stderr_start": err[:2000], "stderr_end": err[-500:]}, hyp="A,C,D,E", loc="app.py:ffmpeg_error")
                 # #endregion
-                summary = "\n".join(error_lines) if error_lines else err[-1500:]
-                raise RuntimeError(f"FFmpeg error: {summary}")
+                diag = {
+                    "stderr_start": err[:2500],
+                    "error_lines": error_lines[:10],
+                    "input_video_probe": input_probe,
+                    "filter": filter_complex,
+                    "bg_vid_size": Path(bg_vid_path).stat().st_size if Path(bg_vid_path).exists() else 0,
+                }
+                raise RuntimeError(f"FFmpeg_DIAG:{json.dumps(diag)}")
         finally:
             Path(bg_vid_path).unlink(missing_ok=True)
     finally:
@@ -569,7 +581,16 @@ def process_tweet():
             profile=profile,
         )
     except Exception as e:
-        return jsonify({"error": f"Erreur lors du traitement vidéo : {str(e)}"}), 500
+        # #region agent log
+        err_str = str(e)
+        if err_str.startswith("FFmpeg_DIAG:"):
+            try:
+                diag = json.loads(err_str[len("FFmpeg_DIAG:"):])
+                return jsonify({"error": "FFmpeg failed", "diagnostics": diag}), 500
+            except Exception:
+                pass
+        # #endregion
+        return jsonify({"error": f"Erreur lors du traitement vidéo : {err_str}"}), 500
     finally:
         Path(raw_video).unlink(missing_ok=True)
         if avatar_tmp_path:
