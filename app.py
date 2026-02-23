@@ -285,9 +285,17 @@ def create_video_with_banner(
 
             filter_complex = (
                 f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[bg];"
-                f"[0:v]fps=30,scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
+                f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
                 f"[bg][vid]overlay={vid_x}:{vid_y}[out]"
             )
+
+            # Detect audio: only add audio options if stream exists
+            probe_audio = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a",
+                 "-show_entries", "stream=index", "-of", "json", input_video],
+                capture_output=True, text=True, timeout=10,
+            )
+            has_audio = '"index"' in probe_audio.stdout
 
             cmd = [
                 "ffmpeg", "-y", "-hide_banner",
@@ -295,13 +303,14 @@ def create_video_with_banner(
                 "-i", bg_vid_path,
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
-                "-map", "0:a?",
+            ]
+            if has_audio:
+                cmd += ["-map", "0:a", "-c:a", "aac", "-b:a", "128k"]
+            cmd += [
                 "-t", f"{duration:.3f}",
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "20",
-                "-c:a", "aac",
-                "-b:a", "128k",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 output_path,
