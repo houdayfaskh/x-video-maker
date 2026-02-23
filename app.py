@@ -261,7 +261,7 @@ def create_video_with_banner(
                     "ffmpeg", "-y", "-hide_banner",
                     "-f", "rawvideo", "-pix_fmt", "rgb24",
                     "-s", f"{OUTPUT_W}x{OUTPUT_H}",
-                    "-r", "1", "-i", "pipe:0",
+                    "-r", "30", "-i", "pipe:0",
                     "-frames:v", "1",
                     "-c:v", "libx264", "-preset", "ultrafast",
                     "-pix_fmt", "yuv420p",
@@ -284,9 +284,8 @@ def create_video_with_banner(
                 raise RuntimeError(f"BG video error: {bg_stderr[-500:]}")
 
             filter_complex = (
-                f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[bg];"
                 f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
-                f"[bg][vid]overlay={vid_x}:{vid_y}[out]"
+                f"[1:v][vid]overlay={vid_x}:{vid_y}[out]"
             )
 
             # Detect audio: only add audio options if stream exists
@@ -300,7 +299,7 @@ def create_video_with_banner(
             cmd = [
                 "ffmpeg", "-y", "-hide_banner",
                 "-i", input_video,
-                "-i", bg_vid_path,
+                "-stream_loop", "-1", "-r", "30", "-i", bg_vid_path,
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
             ]
