@@ -221,36 +221,57 @@ def create_video_with_banner(
             f"overlay=({text_overlay_x},{text_overlay_y}) vid_pos=({vid_x},{vid_y})"
         )
 
-        filter_complex = (
-            f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[scaled];"
-            f"[scaled]pad={OUTPUT_W}:{OUTPUT_H}:{vid_x}:{vid_y}:black,"
-            f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=0x3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
-            f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=0x3A3A3C@0.5:t=fill[base];"
-            f"[base][1:v]overlay={text_overlay_x}:{text_overlay_y}[out]"
-        )
+        # Two-pass approach for maximum FFmpeg compatibility:
+        # 1) Convert the PNG into a short yuv420p video
+        # 2) Overlay that video onto the main video
+        _, text_vid_path = tempfile.mkstemp(suffix=".mp4", prefix="tweet_txt_vid_")
+        try:
+            mk_vid = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-framerate", "1", "-i", text_png_path,
+                "-t", "1",
+                "-vf", "format=yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0",
+                text_vid_path,
+            ]
+            app.logger.info(f"Creating text video: {' '.join(mk_vid)}")
+            r1 = subprocess.run(mk_vid, capture_output=True, text=True, timeout=30)
+            if r1.returncode != 0:
+                raise RuntimeError(f"Text video error: {r1.stderr[-500:]}")
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", input_video,
-            "-loop", "1", "-t", f"{duration:.3f}", "-i", text_png_path,
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-map", "0:a?",
-            "-shortest",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "20",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            output_path,
-        ]
+            filter_complex = (
+                f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[scaled];"
+                f"[scaled]pad={OUTPUT_W}:{OUTPUT_H}:{vid_x}:{vid_y}:black,"
+                f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=0x3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
+                f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=0x3A3A3C@0.5:t=fill[base];"
+                f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[txt];"
+                f"[base][txt]overlay={text_overlay_x}:{text_overlay_y}:shortest=1[out]"
+            )
 
-        app.logger.info(f"FFmpeg cmd: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if result.returncode != 0:
-            app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
-            raise RuntimeError(f"FFmpeg error: {result.stderr[-2000:]}")
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", input_video,
+                "-i", text_vid_path,
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-map", "0:a?",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "20",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                output_path,
+            ]
+
+            app.logger.info(f"FFmpeg cmd: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
+                raise RuntimeError(f"FFmpeg error: {result.stderr[-2000:]}")
+        finally:
+            Path(text_vid_path).unlink(missing_ok=True)
     finally:
         Path(text_png_path).unlink(missing_ok=True)
 
@@ -260,6 +281,30 @@ def create_video_with_banner(
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/healthcheck")
+def healthcheck():
+    """Quick sanity check: FFmpeg version + text render."""
+    import shutil
+    info = {"ffmpeg": None, "render": None}
+    ffmpeg_path = shutil.which("ffmpeg")
+    info["ffmpeg_path"] = ffmpeg_path
+    try:
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=5)
+        info["ffmpeg"] = r.stdout.split("\n")[0]
+    except Exception as e:
+        info["ffmpeg"] = str(e)
+    try:
+        _, tmp = tempfile.mkstemp(suffix=".png")
+        cfg = {"text": "test", "font_size": 42, "max_width": 500,
+               "output_path": tmp, "bg_hex": "000000"}
+        h = render_text_to_png(cfg)
+        info["render"] = f"OK height={h}"
+        Path(tmp).unlink(missing_ok=True)
+    except Exception as e:
+        info["render"] = str(e)
+    return jsonify(info)
 
 
 @app.route("/api/process", methods=["POST"])
