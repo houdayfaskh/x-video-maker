@@ -1,0 +1,6 @@
+flask>=3.0
+yt-dlp>=2024.1.0
+ffmpeg-python>=0.2.0
+Pillow>=10.0
+pyobjc-framework-Cocoa>=10.0
+deepl>=1.28

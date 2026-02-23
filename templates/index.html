@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tweet Video Maker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #050507;
+            color: #e4e4e7;
+            min-height: 100vh;
+        }
+
+        .bg-glow {
+            position: fixed;
+            top: -200px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 400px;
+            background: radial-gradient(ellipse, rgba(29,155,240,0.08) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 580px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 24px;
+            padding-top: 60px;
+        }
+
+        /* --- Header --- */
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .header .icon {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 16px;
+            background: linear-gradient(135deg, #1d9bf0, #6366f1);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 32px rgba(29,155,240,0.2);
+        }
+
+        .header .icon svg { width: 28px; height: 28px; color: white; }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fafafa;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .header p {
+            color: #71717a;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* --- Sections --- */
+        .section {
+            background: #111113;
+            border: 1px solid #1e1e22;
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 16px;
+            transition: border-color 0.3s;
+        }
+
+        .section:focus-within {
+            border-color: #27272a;
+        }
+
+        .section-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: #52525b;
+            margin-bottom: 14px;
+        }
+
+        /* --- URL Input --- */
+        .url-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        .url-row input {
+            flex: 1;
+            padding: 13px 16px;
+            background: #0a0a0c;
+            border: 1px solid #27272a;
+            border-radius: 12px;
+            color: #fafafa;
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .url-row input::placeholder { color: #3f3f46; }
+
+        .url-row input:focus {
+            border-color: #1d9bf0;
+            box-shadow: 0 0 0 3px rgba(29,155,240,0.1);
+        }
+
+        .btn-generate {
+            padding: 13px 24px;
+            background: #1d9bf0;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s;
+            white-space: nowrap;
+        }
+
+        .btn-generate:hover { background: #1a8cd8; }
+        .btn-generate:active { transform: scale(0.97); }
+        .btn-generate:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+        /* --- Options row --- */
+        .options-row {
+            display: flex;
+            gap: 0;
+            flex-direction: column;
+        }
+
+        .option-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 0;
+            border-bottom: 1px solid #1a1a1e;
+        }
+
+        .option-item:last-child { border-bottom: none; }
+
+        .option-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .option-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .option-icon.blue { background: rgba(29,155,240,0.1); color: #1d9bf0; }
+        .option-icon.purple { background: rgba(139,92,246,0.1); color: #8b5cf6; }
+
+        .option-icon svg { width: 18px; height: 18px; }
+
+        .option-text { font-size: 14px; font-weight: 500; color: #d4d4d8; }
+        .option-sub { font-size: 12px; color: #52525b; margin-top: 1px; }
+
+        /* Toggle */
+        .toggle {
+            position: relative;
+            width: 44px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+
+        .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+
+        .toggle .slider {
+            position: absolute;
+            inset: 0;
+            background: #27272a;
+            border-radius: 13px;
+            cursor: pointer;
+            transition: background 0.25s;
+        }
+
+        .toggle .slider::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            left: 3px;
+            top: 3px;
+            background: #71717a;
+            border-radius: 50%;
+            transition: transform 0.25s, background 0.25s;
+        }
+
+        .toggle input:checked + .slider { background: #1d9bf0; }
+        .toggle input:checked + .slider::after { transform: translateX(18px); background: white; }
+
+        /* --- Expand panels --- */
+        .expand-panel {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, opacity 0.3s ease, padding 0.3s ease;
+            opacity: 0;
+        }
+
+        .expand-panel.active {
+            max-height: 300px;
+            opacity: 1;
+        }
+
+        .panel-inner {
+            padding-top: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .panel-inner input[type="text"],
+        .panel-inner input[type="password"] {
+            padding: 11px 14px;
+            background: #0a0a0c;
+            border: 1px solid #27272a;
+            border-radius: 10px;
+            color: #fafafa;
+            font-family: inherit;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+            width: 100%;
+        }
+
+        .panel-inner input::placeholder { color: #3f3f46; }
+        .panel-inner input:focus { border-color: #1d9bf0; }
+
+        .input-row { display: flex; gap: 10px; }
+        .input-row input { flex: 1; }
+
+        .panel-hint {
+            font-size: 12px;
+            color: #3f3f46;
+        }
+
+        .panel-hint a { color: #1d9bf0; text-decoration: none; }
+        .panel-hint a:hover { text-decoration: underline; }
+
+        /* --- File upload --- */
+        .file-upload {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .file-upload label {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 9px 14px;
+            background: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 10px;
+            color: #71717a;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .file-upload label:hover { background: #27272a; color: #d4d4d8; }
+        .file-upload input { display: none; }
+        .file-upload .file-name { font-size: 12px; color: #52525b; }
+
+        .avatar-preview {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid #27272a;
+            display: none;
+        }
+
+        /* --- Status --- */
+        .status-bar {
+            margin-top: 16px;
+            display: none;
+        }
+
+        .status-bar.active { display: block; }
+
+        .status-inner {
+            background: #111113;
+            border: 1px solid #1e1e22;
+            border-radius: 14px;
+            padding: 20px;
+        }
+
+        .progress {
+            width: 100%;
+            height: 3px;
+            background: #1a1a1e;
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 14px;
+        }
+
+        .progress .bar {
+            height: 100%;
+            background: linear-gradient(90deg, #1d9bf0, #6366f1);
+            border-radius: 3px;
+            width: 30%;
+            animation: loading 1.8s ease-in-out infinite;
+        }
+
+        @keyframes loading {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(450%); }
+        }
+
+        .status-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            color: #71717a;
+        }
+
+        .dot-pulse {
+            width: 6px; height: 6px;
+            background: #1d9bf0;
+            border-radius: 50%;
+            animation: pulse 1.2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        /* --- Result --- */
+        .result-bar {
+            margin-top: 16px;
+            display: none;
+        }
+
+        .result-bar.active { display: block; }
+
+        .result-inner {
+            background: #111113;
+            border: 1px solid #1e1e22;
+            border-radius: 14px;
+            padding: 20px;
+        }
+
+        .result-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: rgba(34,197,94,0.1);
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #22c55e;
+            margin-bottom: 14px;
+        }
+
+        .result-badge svg { width: 16px; height: 16px; }
+
+        .tweet-preview {
+            background: #0a0a0c;
+            border: 1px solid #1a1a1e;
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #a1a1aa;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .tweet-preview .author {
+            font-weight: 600;
+            color: #d4d4d8;
+            margin-bottom: 4px;
+        }
+
+        .btn-download {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 13px;
+            background: #22c55e;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            text-decoration: none;
+        }
+
+        .btn-download:hover { background: #16a34a; }
+        .btn-download svg { width: 18px; height: 18px; }
+
+        /* --- Error --- */
+        .error-bar {
+            margin-top: 16px;
+            display: none;
+        }
+
+        .error-bar.active { display: block; }
+
+        .error-box {
+            background: rgba(239,68,68,0.06);
+            border: 1px solid rgba(239,68,68,0.15);
+            border-radius: 14px;
+            padding: 16px;
+            color: #fca5a5;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        /* --- Footer --- */
+        .footer {
+            text-align: center;
+            color: #27272a;
+            font-size: 12px;
+            padding: 32px 0;
+        }
+
+        /* --- Mobile --- */
+        @media (max-width: 500px) {
+            .container { padding-top: 36px; padding: 16px; }
+            .url-row { flex-direction: column; }
+            .input-row { flex-direction: column; }
+            .header h1 { font-size: 24px; }
+            .section { padding: 18px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-glow"></div>
+
+    <div class="container">
+        <div class="header">
+            <div class="icon">
+                <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                </svg>
+            </div>
+            <h1>Tweet Video Maker</h1>
+            <p>Transforme un tweet avec vidéo en clip prêt pour les Reels et Shorts.</p>
+        </div>
+
+        <!-- URL -->
+        <div class="section">
+            <div class="section-label">Lien du tweet</div>
+            <div class="url-row">
+                <input type="url" id="urlInput" placeholder="https://x.com/user/status/..." autocomplete="off" spellcheck="false">
+                <button class="btn-generate" id="processBtn" onclick="processVideo()">Générer</button>
+            </div>
+        </div>
+
+        <!-- Options -->
+        <div class="section">
+            <div class="section-label">Options</div>
+            <div class="options-row">
+
+                <!-- Translate -->
+                <div class="option-item">
+                    <div class="option-left">
+                        <div class="option-icon blue">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"/></svg>
+                        </div>
+                        <div>
+                            <div class="option-text">Traduire en français</div>
+                            <div class="option-sub">Via DeepL API</div>
+                        </div>
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="translateToggle" onchange="toggleTranslate()">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="expand-panel" id="deeplFields">
+                    <div class="panel-inner">
+                        <input type="password" id="deeplKey" placeholder="Clé API DeepL">
+                        <p class="panel-hint">Clé gratuite sur <a href="https://www.deepl.com/pro#developer" target="_blank">deepl.com/pro#developer</a></p>
+                    </div>
+                </div>
+
+                <!-- Profile -->
+                <div class="option-item">
+                    <div class="option-left">
+                        <div class="option-icon purple">
+                            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                        </div>
+                        <div>
+                            <div class="option-text">Ajouter un profil</div>
+                            <div class="option-sub">Nom, photo et badge vérifié</div>
+                        </div>
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="profileToggle" onchange="toggleProfile()">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="expand-panel" id="profileFields">
+                    <div class="panel-inner">
+                        <div class="input-row">
+                            <input type="text" id="profileName" placeholder="Nom (ex: Elon Musk)">
+                            <input type="text" id="profileHandle" placeholder="@handle">
+                        </div>
+                        <div class="file-upload">
+                            <label>
+                                <svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                Photo de profil
+                                <input type="file" id="profilePic" accept="image/*" onchange="previewAvatar()">
+                            </label>
+                            <img id="avatarPreview" class="avatar-preview" alt="">
+                            <span class="file-name" id="fileName"></span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Status -->
+        <div class="status-bar" id="status">
+            <div class="status-inner">
+                <div class="progress"><div class="bar"></div></div>
+                <div class="status-label">
+                    <div class="dot-pulse"></div>
+                    <span id="statusText">Extraction du tweet...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Result -->
+        <div class="result-bar" id="result">
+            <div class="result-inner">
+                <div class="result-badge">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    Vidéo prête
+                </div>
+                <div class="tweet-preview" id="tweetPreview"></div>
+                <a class="btn-download" id="downloadBtn" href="#" download>
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                    Télécharger la vidéo
+                </a>
+            </div>
+        </div>
+
+        <!-- Error -->
+        <div class="error-bar" id="error">
+            <div class="error-box" id="errorText"></div>
+        </div>
+
+        <div class="footer">Tweet Video Maker &middot; yt-dlp &amp; FFmpeg &middot; Aucune donnée stockée</div>
+    </div>
+
+    <script>
+        const urlInput = document.getElementById('urlInput');
+        const processBtn = document.getElementById('processBtn');
+        const translateToggle = document.getElementById('translateToggle');
+        const profileToggle = document.getElementById('profileToggle');
+        const profileFields = document.getElementById('profileFields');
+        const profileName = document.getElementById('profileName');
+        const profileHandle = document.getElementById('profileHandle');
+        const profilePic = document.getElementById('profilePic');
+        const avatarPreview = document.getElementById('avatarPreview');
+        const fileName = document.getElementById('fileName');
+        const deeplFields = document.getElementById('deeplFields');
+        const deeplKey = document.getElementById('deeplKey');
+        const status = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const result = document.getElementById('result');
+        const error = document.getElementById('error');
+        const errorText = document.getElementById('errorText');
+        const tweetPreview = document.getElementById('tweetPreview');
+        const downloadBtn = document.getElementById('downloadBtn');
+
+        urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') processVideo(); });
+
+        function saveToLocal() {
+            localStorage.setItem('tvm_profile_name', profileName.value);
+            localStorage.setItem('tvm_profile_handle', profileHandle.value);
+            localStorage.setItem('tvm_translate', translateToggle.checked);
+            localStorage.setItem('tvm_profile_on', profileToggle.checked);
+            localStorage.setItem('tvm_deepl_key', deeplKey.value);
+        }
+
+        function loadFromLocal() {
+            const name = localStorage.getItem('tvm_profile_name');
+            const handle = localStorage.getItem('tvm_profile_handle');
+            const translate = localStorage.getItem('tvm_translate') === 'true';
+            const profileOn = localStorage.getItem('tvm_profile_on') === 'true';
+            const avatarData = localStorage.getItem('tvm_avatar_data');
+            const avatarName = localStorage.getItem('tvm_avatar_name');
+            const savedKey = localStorage.getItem('tvm_deepl_key');
+
+            if (name) profileName.value = name;
+            if (handle) profileHandle.value = handle;
+            if (savedKey) deeplKey.value = savedKey;
+            translateToggle.checked = translate;
+            if (translate) deeplFields.classList.add('active');
+            profileToggle.checked = profileOn;
+            if (profileOn) profileFields.classList.add('active');
+
+            if (avatarData) {
+                avatarPreview.src = avatarData;
+                avatarPreview.style.display = 'block';
+                fileName.textContent = avatarName || 'Photo sauvegardée';
+                window._cachedAvatarData = avatarData;
+            }
+        }
+
+        profileName.addEventListener('input', saveToLocal);
+        profileHandle.addEventListener('input', saveToLocal);
+        deeplKey.addEventListener('input', saveToLocal);
+
+        function toggleTranslate() {
+            deeplFields.classList.toggle('active', translateToggle.checked);
+            saveToLocal();
+        }
+
+        function toggleProfile() {
+            profileFields.classList.toggle('active', profileToggle.checked);
+            saveToLocal();
+        }
+
+        function previewAvatar() {
+            const file = profilePic.files[0];
+            if (file) {
+                fileName.textContent = file.name;
+                avatarPreview.src = URL.createObjectURL(file);
+                avatarPreview.style.display = 'block';
+                const reader = new FileReader();
+                reader.onload = () => {
+                    localStorage.setItem('tvm_avatar_data', reader.result);
+                    localStorage.setItem('tvm_avatar_name', file.name);
+                    window._cachedAvatarData = reader.result;
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        loadFromLocal();
+
+        const defaultSteps = ["Extraction des infos du tweet...", "Téléchargement de la vidéo...", "Ajout du texte sur la vidéo...", "Finalisation..."];
+        const translateSteps = ["Extraction des infos du tweet...", "Traduction via DeepL...", "Téléchargement de la vidéo...", "Ajout du texte sur la vidéo...", "Finalisation..."];
+
+        async function processVideo() {
+            const url = urlInput.value.trim();
+            if (!url) { urlInput.focus(); return; }
+
+            status.classList.add('active');
+            result.classList.remove('active');
+            error.classList.remove('active');
+            processBtn.disabled = true;
+
+            const steps = translateToggle.checked ? translateSteps : defaultSteps;
+            let stepIdx = 0;
+            statusText.textContent = steps[0];
+            const stepInterval = setInterval(() => {
+                stepIdx++;
+                if (stepIdx < steps.length) statusText.textContent = steps[stepIdx];
+            }, 5000);
+
+            try {
+                let fetchOpts;
+                const hasProfile = profileToggle.checked && profileName.value.trim();
+
+                if (hasProfile) {
+                    const formData = new FormData();
+                    formData.append('url', url);
+                    formData.append('translate', translateToggle.checked);
+                    formData.append('deepl_key', deeplKey.value.trim());
+                    formData.append('profile_name', profileName.value.trim());
+                    formData.append('profile_handle', profileHandle.value.trim());
+                    if (profilePic.files[0]) {
+                        formData.append('profile_pic', profilePic.files[0]);
+                    } else if (window._cachedAvatarData) {
+                        const r = await fetch(window._cachedAvatarData);
+                        formData.append('profile_pic', await r.blob(), 'avatar.png');
+                    }
+                    fetchOpts = { method: 'POST', body: formData };
+                } else {
+                    fetchOpts = {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url, translate: translateToggle.checked, deepl_key: deeplKey.value.trim() }),
+                    };
+                }
+
+                const resp = await fetch('/api/process', fetchOpts);
+                const data = await resp.json();
+                clearInterval(stepInterval);
+
+                if (!resp.ok || data.error) throw new Error(data.error || 'Erreur inconnue');
+
+                const author = data.uploader ? `<div class="author">@${data.uploader}</div>` : '';
+                tweetPreview.innerHTML = author + data.tweet_text.replace(/\n/g, '<br>');
+                downloadBtn.href = data.download_url;
+
+                status.classList.remove('active');
+                result.classList.add('active');
+            } catch (err) {
+                clearInterval(stepInterval);
+                status.classList.remove('active');
+                errorText.textContent = err.message;
+                error.classList.add('active');
+            } finally {
+                processBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
