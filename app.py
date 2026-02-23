@@ -83,19 +83,23 @@ def download_video(url: str, output_path: str) -> str:
     return output_path
 
 
-def get_video_dimensions(video_path: str) -> tuple:
-    """Get video width and height using ffprobe."""
+def get_video_info(video_path: str) -> tuple:
+    """Get video width, height, and duration using ffprobe."""
     cmd = [
         "ffprobe", "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
+        "-show_entries", "stream=width,height,duration",
+        "-show_entries", "format=duration",
         "-of", "json",
         video_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     data = json.loads(result.stdout)
     stream = data["streams"][0]
-    return int(stream["width"]), int(stream["height"])
+    w = int(stream["width"])
+    h = int(stream["height"])
+    dur = stream.get("duration") or data.get("format", {}).get("duration") or "30"
+    return w, h, float(dur)
 
 
 OUTPUT_W, OUTPUT_H = 1080, 1920
@@ -164,7 +168,7 @@ def create_video_with_banner(
     - Tweet-style card: native text + emojis, optional profile header
     - No links
     """
-    orig_w, orig_h = get_video_dimensions(input_video)
+    orig_w, orig_h, duration = get_video_info(input_video)
 
     display_text = clean_tweet_text(tweet_text)
 
@@ -213,26 +217,26 @@ def create_video_with_banner(
 
         app.logger.info(
             f"Layout: text_h={text_area_h} vid={vid_w}x{vid_h} "
-            f"card={card_x},{card_y} {card_w}x{card_h} "
+            f"card={card_x},{card_y} {card_w}x{card_h} dur={duration:.2f}s "
             f"overlay=({text_overlay_x},{text_overlay_y}) vid_pos=({vid_x},{vid_y})"
         )
 
         filter_complex = (
-            f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos[scaled];"
+            f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[scaled];"
             f"[scaled]pad={OUTPUT_W}:{OUTPUT_H}:{vid_x}:{vid_y}:black,"
             f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=0x3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
             f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=0x3A3A3C@0.5:t=fill[base];"
-            f"[1:v]scale={card_w}:{text_area_h}:flags=lanczos,format=rgba[txt];"
-            f"[base][txt]overlay={text_overlay_x}:{text_overlay_y}:shortest=1[out]"
+            f"[base][1:v]overlay={text_overlay_x}:{text_overlay_y}[out]"
         )
 
         cmd = [
             "ffmpeg", "-y",
             "-i", input_video,
-            "-loop", "1", "-i", text_png_path,
+            "-loop", "1", "-t", f"{duration:.3f}", "-i", text_png_path,
             "-filter_complex", filter_complex,
             "-map", "[out]",
             "-map", "0:a?",
+            "-shortest",
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "20",
@@ -242,7 +246,7 @@ def create_video_with_banner(
             output_path,
         ]
 
-        app.logger.info(f"FFmpeg filter_complex: {filter_complex}")
+        app.logger.info(f"FFmpeg cmd: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
