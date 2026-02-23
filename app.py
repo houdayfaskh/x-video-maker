@@ -221,40 +221,47 @@ def create_video_with_banner(
             f"overlay=({text_overlay_x},{text_overlay_y}) vid_pos=({vid_x},{vid_y})"
         )
 
-        # Two-pass approach for maximum FFmpeg compatibility:
-        # 1) Convert the PNG into a short yuv420p video
-        # 2) Overlay that video onto the main video
-        _, text_vid_path = tempfile.mkstemp(suffix=".mp4", prefix="tweet_txt_vid_")
-        try:
-            mk_vid = [
-                "ffmpeg", "-y",
-                "-loop", "1", "-framerate", "1", "-i", text_png_path,
-                "-t", "1",
-                "-vf", "format=yuv420p",
-                "-c:v", "libx264", "-preset", "ultrafast", "-qp", "0",
-                text_vid_path,
-            ]
-            app.logger.info(f"Creating text video: {' '.join(mk_vid)}")
-            r1 = subprocess.run(mk_vid, capture_output=True, text=True, timeout=30)
-            if r1.returncode != 0:
-                raise RuntimeError(f"Text video error: {r1.stderr[-500:]}")
+        # Build full 1080x1920 background with Pillow (text + card area),
+        # then use lavfi color source as the timing driver to avoid all
+        # -loop / shortest / eof issues across FFmpeg versions.
+        from PIL import Image as PILImage, ImageDraw as PILDraw
+        bg = PILImage.new("RGB", (OUTPUT_W, OUTPUT_H), (0, 0, 0))
+        text_img = PILImage.open(text_png_path).convert("RGB")
+        if text_img.height > text_area_h:
+            text_img = text_img.crop((0, 0, text_img.width, text_area_h))
+        bg.paste(text_img, (text_overlay_x, text_overlay_y))
+        d = PILDraw.Draw(bg)
+        border_col = (58, 58, 60)
+        d.rectangle(
+            [card_x, card_y, card_x + card_w, card_y + card_h],
+            outline=border_col, width=CARD_RADIUS_HACK_T,
+        )
+        d.rectangle(
+            [card_x, sep_y, card_x + card_w, sep_y + 2],
+            fill=border_col,
+        )
 
+        _, full_bg_path = tempfile.mkstemp(suffix=".png", prefix="tweet_bg_")
+        try:
+            bg.save(full_bg_path, "PNG")
+            app.logger.info(f"Full background saved: {full_bg_path}")
+
+            fps = 30
             filter_complex = (
-                f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[scaled];"
-                f"[scaled]pad={OUTPUT_W}:{OUTPUT_H}:{vid_x}:{vid_y}:black,"
-                f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=0x3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
-                f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=0x3A3A3C@0.5:t=fill[base];"
-                f"[1:v]loop=-1:size=1:start=0,setpts=N/30/TB[txt];"
-                f"[base][txt]overlay={text_overlay_x}:{text_overlay_y}:shortest=1[out]"
+                f"color=c=black:s={OUTPUT_W}x{OUTPUT_H}:d={duration}:r={fps}[base];"
+                f"[base][1:v]overlay=0:0[with_bg];"
+                f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos,setsar=1[vid];"
+                f"[with_bg][vid]overlay={vid_x}:{vid_y}[out]"
             )
 
             cmd = [
                 "ffmpeg", "-y",
                 "-i", input_video,
-                "-i", text_vid_path,
+                "-i", full_bg_path,
                 "-filter_complex", filter_complex,
                 "-map", "[out]",
                 "-map", "0:a?",
+                "-t", f"{duration:.3f}",
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "20",
@@ -271,7 +278,7 @@ def create_video_with_banner(
                 app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
                 raise RuntimeError(f"FFmpeg error: {result.stderr[-2000:]}")
         finally:
-            Path(text_vid_path).unlink(missing_ok=True)
+            Path(full_bg_path).unlink(missing_ok=True)
     finally:
         Path(text_png_path).unlink(missing_ok=True)
 
