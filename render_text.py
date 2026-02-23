@@ -1,35 +1,29 @@
 """
-Render tweet-style text to PNG using Pillow (cross-platform).
-Supports: configurable font, optional profile header with circular avatar,
-display name, blue verified badge, and @handle.
+Render tweet-style text card to PNG using Pillow (cross-platform).
+Closely matches the X / Twitter dark-mode visual style.
+Uses the Inter font family (bundled in fonts/).
 Usage: python render_text.py <json_config_path>
 Prints the image height to stdout.
 """
 import sys
 import json
+import math
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 
-FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/SFNSText.ttf",
-    "C:/Windows/Fonts/segoeui.ttf",
-]
-
-BOLD_FONT_CANDIDATES = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/System/Library/Fonts/Helvetica.ttc",
-    "/System/Library/Fonts/SFNSText-Bold.ttf",
-    "C:/Windows/Fonts/segoeuib.ttf",
-]
+# ── X / Twitter dark-mode palette ──────────────────────────────────
+TEXT_PRIMARY = (231, 233, 234)       # #E7E9EA
+TEXT_SECONDARY = (113, 118, 123)     # #71767B
+BADGE_BLUE = (29, 155, 240)         # #1D9BF0
+WHITE = (255, 255, 255)
 
 
-def _load_font(candidates, size):
-    for path in candidates:
+def _try_load(paths, size):
+    for p in paths:
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(str(p), size)
         except (OSError, IOError):
             continue
     try:
@@ -38,70 +32,97 @@ def _load_font(candidates, size):
         return ImageFont.load_default()
 
 
-def load_font(size, bold=False):
-    return _load_font(BOLD_FONT_CANDIDATES if bold else FONT_CANDIDATES, size)
+def font_regular(size):
+    return _try_load([
+        FONTS_DIR / "Inter-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ], size)
 
 
-def hex_to_rgb(hex_str):
-    h = hex_str.lstrip("#")
+def font_medium(size):
+    return _try_load([
+        FONTS_DIR / "Inter-Medium.ttf",
+        FONTS_DIR / "Inter-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ], size)
+
+
+def font_bold(size):
+    return _try_load([
+        FONTS_DIR / "Inter-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ], size)
+
+
+def hex_to_rgb(h):
+    h = h.lstrip("#")
     return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def wrap_text_to_lines(draw, text, font, max_width):
-    """Word-wrap text so each line fits within max_width pixels."""
+# ── Text wrapping ──────────────────────────────────────────────────
+def wrap_lines(draw, text, font, max_w):
     lines = []
-    for paragraph in text.split("\n"):
-        if not paragraph.strip():
+    for para in text.split("\n"):
+        if not para.strip():
             lines.append("")
             continue
-        words = paragraph.split()
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            bbox = draw.textbbox((0, 0), test, font=font)
-            if bbox[2] - bbox[0] <= max_width:
-                current = test
+        words = para.split()
+        cur = ""
+        for w in words:
+            test = f"{cur} {w}".strip()
+            if draw.textlength(test, font=font) <= max_w:
+                cur = test
             else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
     return lines
 
 
-def draw_verified_badge(draw, x, y, size):
-    """Draw Twitter/X blue verified badge (circle + checkmark)."""
-    badge_color = hex_to_rgb("1D9BF0")
-    draw.ellipse([x, y, x + size, y + size], fill=badge_color)
+# ── Verified badge (X-style) ──────────────────────────────────────
+def draw_verified(draw, cx, cy, r):
+    """Draw the X verified badge centred at (cx, cy) with radius r."""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BADGE_BLUE)
 
-    cx, cy = x + size / 2, y + size / 2
-    s = size * 0.22
-    points = [
-        (cx - s * 1.1, cy + s * 0.1),
-        (cx - s * 0.2, cy + s * 0.9),
-        (cx + s * 1.3, cy - s * 0.9),
+    s = r * 0.45
+    pts = [
+        (cx - s * 0.85, cy - s * 0.05),
+        (cx - s * 0.25, cy + s * 0.65),
+        (cx + s * 0.95, cy - s * 0.60),
     ]
-    draw.line(points, fill="white", width=max(2, int(size * 0.12)))
+    draw.line(pts, fill=WHITE, width=max(2, round(r * 0.28)), joint="curve")
 
 
-def paste_circular_avatar(img, avatar_path, x, y, size):
-    """Paste a circularly-cropped avatar onto img."""
+# ── Avatar helpers ─────────────────────────────────────────────────
+def paste_avatar(img, path, x, y, size):
     try:
-        avatar = Image.open(avatar_path).convert("RGBA")
-        avatar = avatar.resize((size, size), Image.LANCZOS)
+        av = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
         mask = Image.new("L", (size, size), 0)
         ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
-        avatar.putalpha(mask)
-        img.paste(avatar, (x, y), avatar)
+        av.putalpha(mask)
+        img.paste(av, (x, y), av)
     except Exception:
-        draw_placeholder_avatar(ImageDraw.Draw(img), x, y, size)
+        placeholder(ImageDraw.Draw(img), x, y, size)
 
 
-def draw_placeholder_avatar(draw, x, y, size):
-    draw.ellipse([x, y, x + size, y + size], fill=hex_to_rgb("333333"))
+def placeholder(draw, x, y, size):
+    draw.ellipse([x, y, x + size, y + size], fill=(51, 51, 51))
+    inner = int(size * 0.55)
+    off = (size - inner) // 2
+    draw.ellipse(
+        [x + off, y + off - size // 10, x + off + inner, y + off + inner - size // 10],
+        fill=(90, 90, 90),
+    )
+    body_w = int(size * 0.7)
+    body_h = int(size * 0.35)
+    bx = x + (size - body_w) // 2
+    by = y + size - body_h - size // 8
+    draw.ellipse([bx, by, bx + body_w, by + body_h], fill=(90, 90, 90))
 
 
+# ── Main render ────────────────────────────────────────────────────
 def render(config):
     text = config["text"]
     font_size = config["font_size"]
@@ -110,89 +131,98 @@ def render(config):
     bg_hex = config.get("bg_hex", "000000")
     profile = config.get("profile")
 
-    body_font = load_font(font_size)
-    bold_font = load_font(int(font_size * 1.1), bold=True)
-    handle_font = load_font(int(font_size * 0.85))
+    # X/Twitter proportions (all relative to 1008px card width ≈ 3× mobile)
+    pad_x = 48
+    pad_top = 44
+    pad_bottom = 44
+    text_w = max_width - pad_x * 2
 
-    padding_x = 48
-    padding_y = 48
-    text_width = max_width - padding_x * 2
+    body_size = font_size
+    body_font = font_regular(body_size)
+    line_gap = round(body_size * 0.40)
+    line_h = body_size + line_gap
 
-    tmp_img = Image.new("RGB", (1, 1))
-    tmp_draw = ImageDraw.Draw(tmp_img)
+    # measure body text
+    tmp = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    lines = wrap_lines(tmp, text, body_font, text_w)
+    body_block_h = len(lines) * line_h
 
-    lines = wrap_text_to_lines(tmp_draw, text, body_font, text_width)
-    line_spacing = int(font_size * 0.45)
-    line_height = font_size + line_spacing
-    text_block_h = len(lines) * line_height
-
-    avatar_size = 140
-    profile_section_h = 0
+    # profile section
+    avatar_sz = 120
+    avatar_name_gap = 28
+    profile_h = 0
     if profile and profile.get("display_name"):
-        profile_section_h = avatar_size + 36
+        profile_h = avatar_sz + 28  # avatar + gap below profile row
 
     img_w = int(max_width)
-    img_h = int(text_block_h + padding_y * 2 + profile_section_h + 10)
+    img_h = int(pad_top + profile_h + body_block_h + pad_bottom)
 
     bg = hex_to_rgb(bg_hex)
     img = Image.new("RGBA", (img_w, img_h), bg + (255,))
     draw = ImageDraw.Draw(img)
 
-    cur_y = padding_y
+    y = pad_top
 
+    # ── Profile row ────────────────────────────────────────────────
     if profile and profile.get("display_name"):
-        avatar_x = padding_x
-        avatar_y = cur_y
+        av_x, av_y = pad_x, y
 
-        avatar_path = profile.get("avatar_path")
-        if avatar_path:
-            paste_circular_avatar(img, avatar_path, avatar_x, avatar_y, avatar_size)
+        if profile.get("avatar_path"):
+            paste_avatar(img, profile["avatar_path"], av_x, av_y, avatar_sz)
             draw = ImageDraw.Draw(img)
         else:
-            draw_placeholder_avatar(draw, avatar_x, avatar_y, avatar_size)
+            placeholder(draw, av_x, av_y, avatar_sz)
 
-        name_x = avatar_x + avatar_size + 20
+        name_x = av_x + avatar_sz + avatar_name_gap
         display_name = profile["display_name"]
-        handle = profile.get("handle", "")
+        handle_str = profile.get("handle", "")
 
-        name_bbox = draw.textbbox((0, 0), display_name, font=bold_font)
-        name_w = name_bbox[2] - name_bbox[0]
-        name_h = name_bbox[3] - name_bbox[1]
+        name_font = font_bold(round(body_size * 1.05))
+        handle_font = font_regular(round(body_size * 0.88))
 
-        if handle:
-            name_y = avatar_y + avatar_size // 2 - name_h - 4
-        else:
-            name_y = avatar_y + (avatar_size - name_h) // 2
+        name_bb = draw.textbbox((0, 0), display_name, font=name_font)
+        name_w = name_bb[2] - name_bb[0]
+        name_h = name_bb[3] - name_bb[1]
 
-        draw.text((name_x, name_y), display_name, fill="white", font=bold_font)
+        if handle_str:
+            handle_text = handle_str if handle_str.startswith("@") else f"@{handle_str}"
+            h_bb = draw.textbbox((0, 0), handle_text, font=handle_font)
+            h_h = h_bb[3] - h_bb[1]
+            total_text_h = name_h + 6 + h_h
+            name_y = av_y + (avatar_sz - total_text_h) // 2
+            draw.text((name_x, name_y), display_name, fill=TEXT_PRIMARY, font=name_font)
 
-        badge_size = int(name_h * 0.85)
-        badge_x = name_x + name_w + 8
-        badge_y = name_y + (name_h - badge_size) // 2
-        draw_verified_badge(draw, badge_x, badge_y, badge_size)
+            # verified badge
+            badge_r = round(name_h * 0.42)
+            badge_cx = name_x + name_w + 8 + badge_r
+            badge_cy = name_y + name_h // 2
+            draw_verified(draw, badge_cx, badge_cy, badge_r)
 
-        if handle:
-            handle_text = handle if handle.startswith("@") else f"@{handle}"
-            handle_y = name_y + name_h + 4
+            # handle
             draw.text(
-                (name_x, handle_y),
+                (name_x, name_y + name_h + 6),
                 handle_text,
-                fill=hex_to_rgb("71767B"),
+                fill=TEXT_SECONDARY,
                 font=handle_font,
             )
+        else:
+            name_y = av_y + (avatar_sz - name_h) // 2
+            draw.text((name_x, name_y), display_name, fill=TEXT_PRIMARY, font=name_font)
+            badge_r = round(name_h * 0.42)
+            badge_cx = name_x + name_w + 8 + badge_r
+            badge_cy = name_y + name_h // 2
+            draw_verified(draw, badge_cx, badge_cy, badge_r)
 
-        cur_y += profile_section_h
+        y += profile_h
 
+    # ── Body text ──────────────────────────────────────────────────
     for i, line in enumerate(lines):
-        y = cur_y + i * line_height
-        draw.text((padding_x, y), line, fill="white", font=body_font)
+        draw.text((pad_x, y + i * line_h), line, fill=TEXT_PRIMARY, font=body_font)
 
-    img.convert("RGB").save(output_path, "PNG")
+    img.save(output_path, "PNG")
     print(img_h)
 
 
 if __name__ == "__main__":
-    config_path = sys.argv[1]
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    render(config)
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        render(json.load(f))

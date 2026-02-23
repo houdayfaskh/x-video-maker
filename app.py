@@ -21,6 +21,13 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 RENDER_TEXT_SCRIPT = Path(__file__).resolve().parent / "render_text.py"
 
+def _ytdlp_cmd():
+    """Return the yt-dlp command, preferring the one next to the current Python."""
+    venv_bin = Path(sys.executable).parent / "yt-dlp"
+    if venv_bin.exists():
+        return str(venv_bin)
+    return "yt-dlp"
+
 
 def cleanup_old_files():
     """Remove files older than 1 hour from temp and downloads."""
@@ -35,7 +42,7 @@ def cleanup_old_files():
 def extract_tweet_info(url: str) -> dict:
     """Use yt-dlp to extract video URL and tweet description."""
     cmd = [
-        "yt-dlp",
+        _ytdlp_cmd(),
         "--no-check-certificates",
         "--dump-json",
         "--no-download",
@@ -63,7 +70,7 @@ def extract_tweet_info(url: str) -> dict:
 def download_video(url: str, output_path: str) -> str:
     """Download the video using yt-dlp."""
     cmd = [
-        "yt-dlp",
+        _ytdlp_cmd(),
         "--no-check-certificates",
         "-f", "best[ext=mp4]/best",
         "--merge-output-format", "mp4",
@@ -128,7 +135,7 @@ def wrap_text(text: str, max_chars_per_line: int = 45) -> str:
 
 
 def render_text_to_png(config: dict) -> int:
-    """Render tweet-style text to PNG using macOS native CoreText. Returns image height."""
+    """Render tweet-style text to PNG using Pillow. Returns image height."""
     _, config_path = tempfile.mkstemp(suffix=".json", prefix="tweet_cfg_")
     try:
         with open(config_path, "w", encoding="utf-8") as f:
@@ -137,7 +144,9 @@ def render_text_to_png(config: dict) -> int:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"Text render error: {result.stderr.strip()}")
-        return int(result.stdout.strip())
+        height = int(result.stdout.strip())
+        app.logger.info(f"Text PNG rendered: {config['output_path']} height={height}")
+        return height
     finally:
         Path(config_path).unlink(missing_ok=True)
 
@@ -176,18 +185,24 @@ def create_video_with_banner(
 
         text_img_h = render_text_to_png(render_config)
 
-        text_area_h = text_img_h
+        if not Path(text_png_path).exists() or Path(text_png_path).stat().st_size == 0:
+            raise RuntimeError(f"Text PNG not created at {text_png_path}")
+
+        max_text_h = OUTPUT_H // 2
+        text_area_h = min(text_img_h, max_text_h)
         vid_max_w = card_w
         vid_max_h = OUTPUT_H - TOP_SAFE_MARGIN - text_area_h - 4 - (CARD_MARGIN_X * 2)
+        vid_max_h = max(vid_max_h, 200)
 
         scale_f = min(vid_max_w / orig_w, vid_max_h / orig_h)
         vid_w = int(orig_w * scale_f)
         vid_h = int(orig_h * scale_f)
-        vid_w -= vid_w % 2
-        vid_h -= vid_h % 2
+        vid_w = max(vid_w - vid_w % 2, 2)
+        vid_h = max(vid_h - vid_h % 2, 2)
 
         card_h = text_area_h + 2 + vid_h
         card_y = TOP_SAFE_MARGIN + (OUTPUT_H - TOP_SAFE_MARGIN - card_h - CARD_MARGIN_X) // 2
+        card_y = max(card_y, 0)
         card_x = CARD_MARGIN_X
 
         text_overlay_x = card_x
@@ -196,12 +211,19 @@ def create_video_with_banner(
         vid_x = card_x + (card_w - vid_w) // 2
         vid_y = sep_y + 2
 
+        app.logger.info(
+            f"Layout: text_h={text_area_h} vid={vid_w}x{vid_h} "
+            f"card={card_x},{card_y} {card_w}x{card_h} "
+            f"overlay=({text_overlay_x},{text_overlay_y}) vid_pos=({vid_x},{vid_y})"
+        )
+
         filter_complex = (
             f"[0:v]scale={vid_w}:{vid_h}:flags=lanczos[scaled];"
             f"[scaled]pad={OUTPUT_W}:{OUTPUT_H}:{vid_x}:{vid_y}:black,"
-            f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=#3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
-            f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=#3A3A3C@0.5:t=fill[base];"
-            f"[base][1:v]overlay={text_overlay_x}:{text_overlay_y}:shortest=1[out]"
+            f"drawbox=x={card_x}:y={card_y}:w={card_w}:h={card_h}:color=0x3A3A3C@0.6:t={CARD_RADIUS_HACK_T},"
+            f"drawbox=x={card_x}:y={sep_y}:w={card_w}:h=2:color=0x3A3A3C@0.5:t=fill[base];"
+            f"[1:v]scale={card_w}:{text_area_h}:flags=lanczos,format=rgba[txt];"
+            f"[base][txt]overlay={text_overlay_x}:{text_overlay_y}:shortest=1[out]"
         )
 
         cmd = [
@@ -220,9 +242,11 @@ def create_video_with_banner(
             output_path,
         ]
 
+        app.logger.info(f"FFmpeg filter_complex: {filter_complex}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            raise RuntimeError(f"FFmpeg error: {result.stderr[-500:]}")
+            app.logger.error(f"FFmpeg stderr:\n{result.stderr}")
+            raise RuntimeError(f"FFmpeg error: {result.stderr[-2000:]}")
     finally:
         Path(text_png_path).unlink(missing_ok=True)
 
