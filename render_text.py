@@ -1,62 +1,108 @@
 """
-Render tweet-style text to PNG using macOS native CoreText + AppKit.
-Supports: Helvetica Neue font, Apple Color Emoji, optional profile header
-with circular avatar, display name, blue verified badge, and @handle.
+Render tweet-style text to PNG using Pillow (cross-platform).
+Supports: configurable font, optional profile header with circular avatar,
+display name, blue verified badge, and @handle.
 Usage: python render_text.py <json_config_path>
 Prints the image height to stdout.
 """
 import sys
 import json
-import math
-import objc
-import Cocoa
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 
 
-def hex_to_nscolor(hex_str: str) -> Cocoa.NSColor:
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/SFNSText.ttf",
+    "C:/Windows/Fonts/segoeui.ttf",
+]
+
+BOLD_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/SFNSText-Bold.ttf",
+    "C:/Windows/Fonts/segoeuib.ttf",
+]
+
+
+def _load_font(candidates, size):
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def load_font(size, bold=False):
+    return _load_font(BOLD_FONT_CANDIDATES if bold else FONT_CANDIDATES, size)
+
+
+def hex_to_rgb(hex_str):
     h = hex_str.lstrip("#")
-    r = int(h[0:2], 16) / 255.0
-    g = int(h[2:4], 16) / 255.0
-    b = int(h[4:6], 16) / 255.0
-    return Cocoa.NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 1.0)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
-def draw_circle_clip(x, y, size):
-    """Draw a circular clipping path."""
-    path = Cocoa.NSBezierPath.bezierPathWithOvalInRect_(
-        Cocoa.NSMakeRect(x, y, size, size)
-    )
-    return path
+def wrap_text_to_lines(draw, text, font, max_width):
+    """Word-wrap text so each line fits within max_width pixels."""
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        words = paragraph.split()
+        current = ""
+        for word in words:
+            test = f"{current} {word}".strip()
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] <= max_width:
+                current = test
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+    return lines
 
 
-def draw_verified_badge(x, y, size):
-    """Draw Twitter/X blue verified badge."""
-    Cocoa.NSGraphicsContext.currentContext().saveGraphicsState()
-
-    hex_to_nscolor("1D9BF0").setFill()
-    badge_path = Cocoa.NSBezierPath.bezierPathWithOvalInRect_(
-        Cocoa.NSMakeRect(x, y, size, size)
-    )
-    badge_path.fill()
-
-    Cocoa.NSColor.whiteColor().setStroke()
-    Cocoa.NSColor.whiteColor().setFill()
+def draw_verified_badge(draw, x, y, size):
+    """Draw Twitter/X blue verified badge (circle + checkmark)."""
+    badge_color = hex_to_rgb("1D9BF0")
+    draw.ellipse([x, y, x + size, y + size], fill=badge_color)
 
     cx, cy = x + size / 2, y + size / 2
     s = size * 0.22
-
-    check = Cocoa.NSBezierPath.alloc().init()
-    check.setLineWidth_(size * 0.12)
-    check.setLineCapStyle_(Cocoa.NSLineCapStyleRound)
-    check.setLineJoinStyle_(Cocoa.NSLineJoinStyleRound)
-    check.moveToPoint_(Cocoa.NSMakePoint(cx - s * 1.1, cy - s * 0.1))
-    check.lineToPoint_(Cocoa.NSMakePoint(cx - s * 0.2, cy - s * 0.9))
-    check.lineToPoint_(Cocoa.NSMakePoint(cx + s * 1.3, cy + s * 0.9))
-    check.stroke()
-
-    Cocoa.NSGraphicsContext.currentContext().restoreGraphicsState()
+    points = [
+        (cx - s * 1.1, cy + s * 0.1),
+        (cx - s * 0.2, cy + s * 0.9),
+        (cx + s * 1.3, cy - s * 0.9),
+    ]
+    draw.line(points, fill="white", width=max(2, int(size * 0.12)))
 
 
-def render(config: dict):
+def paste_circular_avatar(img, avatar_path, x, y, size):
+    """Paste a circularly-cropped avatar onto img."""
+    try:
+        avatar = Image.open(avatar_path).convert("RGBA")
+        avatar = avatar.resize((size, size), Image.LANCZOS)
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
+        avatar.putalpha(mask)
+        img.paste(avatar, (x, y), avatar)
+    except Exception:
+        draw_placeholder_avatar(ImageDraw.Draw(img), x, y, size)
+
+
+def draw_placeholder_avatar(draw, x, y, size):
+    draw.ellipse([x, y, x + size, y + size], fill=hex_to_rgb("333333"))
+
+
+def render(config):
     text = config["text"]
     font_size = config["font_size"]
     max_width = config["max_width"]
@@ -64,151 +110,85 @@ def render(config: dict):
     bg_hex = config.get("bg_hex", "000000")
     profile = config.get("profile")
 
-    body_font = Cocoa.NSFont.fontWithName_size_("HelveticaNeue", font_size)
-    if body_font is None:
-        body_font = Cocoa.NSFont.systemFontOfSize_(font_size)
-
-    para = Cocoa.NSMutableParagraphStyle.alloc().init()
-    para.setAlignment_(Cocoa.NSTextAlignmentLeft)
-    para.setLineSpacing_(font_size * 0.45)
-
-    body_attrs = {
-        Cocoa.NSFontAttributeName: body_font,
-        Cocoa.NSForegroundColorAttributeName: Cocoa.NSColor.whiteColor(),
-        Cocoa.NSParagraphStyleAttributeName: para,
-    }
-
-    attr_str = Cocoa.NSAttributedString.alloc().initWithString_attributes_(text, body_attrs)
+    body_font = load_font(font_size)
+    bold_font = load_font(int(font_size * 1.1), bold=True)
+    handle_font = load_font(int(font_size * 0.85))
 
     padding_x = 48
-    text_width = max_width - (padding_x * 2)
-    bounding = attr_str.boundingRectWithSize_options_(
-        Cocoa.NSMakeSize(text_width, 10000),
-        Cocoa.NSStringDrawingUsesLineFragmentOrigin | Cocoa.NSStringDrawingUsesFontLeading,
-    )
-
     padding_y = 48
-    profile_section_h = 0
-    avatar_size = 140
+    text_width = max_width - padding_x * 2
 
+    tmp_img = Image.new("RGB", (1, 1))
+    tmp_draw = ImageDraw.Draw(tmp_img)
+
+    lines = wrap_text_to_lines(tmp_draw, text, body_font, text_width)
+    line_spacing = int(font_size * 0.45)
+    line_height = font_size + line_spacing
+    text_block_h = len(lines) * line_height
+
+    avatar_size = 140
+    profile_section_h = 0
     if profile and profile.get("display_name"):
         profile_section_h = avatar_size + 36
 
     img_w = int(max_width)
-    img_h = int(bounding.size.height + padding_y * 2 + profile_section_h + 10)
+    img_h = int(text_block_h + padding_y * 2 + profile_section_h + 10)
 
-    rep = Cocoa.NSBitmapImageRep.alloc().initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel_(
-        None, img_w, img_h, 8, 4, True, False, Cocoa.NSDeviceRGBColorSpace, 0, 0
-    )
+    bg = hex_to_rgb(bg_hex)
+    img = Image.new("RGBA", (img_w, img_h), bg + (255,))
+    draw = ImageDraw.Draw(img)
 
-    ctx = Cocoa.NSGraphicsContext.graphicsContextWithBitmapImageRep_(rep)
-    Cocoa.NSGraphicsContext.saveGraphicsState()
-    Cocoa.NSGraphicsContext.setCurrentContext_(ctx)
-
-    bg_color = hex_to_nscolor(bg_hex)
-    bg_color.setFill()
-    Cocoa.NSRectFill(Cocoa.NSMakeRect(0, 0, img_w, img_h))
-
-    # NSBitmapImageRep uses flipped=NO: origin is bottom-left
-    # We draw from bottom up: body text first, then profile on top
-
-    body_y = padding_y
-    draw_rect = Cocoa.NSMakeRect(padding_x, body_y, text_width, bounding.size.height + 10)
-    attr_str.drawInRect_(draw_rect)
+    cur_y = padding_y
 
     if profile and profile.get("display_name"):
-        profile_base_y = body_y + bounding.size.height + 20
-
         avatar_x = padding_x
-        avatar_y = profile_base_y
+        avatar_y = cur_y
 
         avatar_path = profile.get("avatar_path")
         if avatar_path:
-            avatar_img = Cocoa.NSImage.alloc().initWithContentsOfFile_(avatar_path)
-            if avatar_img:
-                Cocoa.NSGraphicsContext.currentContext().saveGraphicsState()
-                clip = draw_circle_clip(avatar_x, avatar_y, avatar_size)
-                clip.addClip()
-                avatar_img.drawInRect_fromRect_operation_fraction_(
-                    Cocoa.NSMakeRect(avatar_x, avatar_y, avatar_size, avatar_size),
-                    Cocoa.NSZeroRect,
-                    Cocoa.NSCompositingOperationSourceOver,
-                    1.0,
-                )
-                Cocoa.NSGraphicsContext.currentContext().restoreGraphicsState()
-            else:
-                _draw_placeholder_avatar(avatar_x, avatar_y, avatar_size)
+            paste_circular_avatar(img, avatar_path, avatar_x, avatar_y, avatar_size)
+            draw = ImageDraw.Draw(img)
         else:
-            _draw_placeholder_avatar(avatar_x, avatar_y, avatar_size)
+            draw_placeholder_avatar(draw, avatar_x, avatar_y, avatar_size)
 
         name_x = avatar_x + avatar_size + 20
         display_name = profile["display_name"]
         handle = profile.get("handle", "")
 
-        name_font = Cocoa.NSFont.fontWithName_size_("HelveticaNeue-Bold", font_size * 1.1)
-        if name_font is None:
-            name_font = Cocoa.NSFont.boldSystemFontOfSize_(font_size * 1.1)
-
-        name_attrs = {
-            Cocoa.NSFontAttributeName: name_font,
-            Cocoa.NSForegroundColorAttributeName: Cocoa.NSColor.whiteColor(),
-        }
-        name_str = Cocoa.NSAttributedString.alloc().initWithString_attributes_(display_name, name_attrs)
-        name_size = name_str.size()
-
-        name_y = avatar_y + avatar_size - name_size.height - 4
-        if handle:
-            name_y = avatar_y + avatar_size / 2 + 1
-
-        name_str.drawAtPoint_(Cocoa.NSMakePoint(name_x, name_y))
-
-        badge_size = name_size.height * 0.85
-        badge_x = name_x + name_size.width + 6
-        badge_y = name_y + (name_size.height - badge_size) / 2
-        draw_verified_badge(badge_x, badge_y, badge_size)
+        name_bbox = draw.textbbox((0, 0), display_name, font=bold_font)
+        name_w = name_bbox[2] - name_bbox[0]
+        name_h = name_bbox[3] - name_bbox[1]
 
         if handle:
-            handle_font = Cocoa.NSFont.fontWithName_size_("HelveticaNeue", font_size * 0.85)
-            if handle_font is None:
-                handle_font = Cocoa.NSFont.systemFontOfSize_(font_size * 0.85)
-            handle_attrs = {
-                Cocoa.NSFontAttributeName: handle_font,
-                Cocoa.NSForegroundColorAttributeName: hex_to_nscolor("71767B"),
-            }
+            name_y = avatar_y + avatar_size // 2 - name_h - 4
+        else:
+            name_y = avatar_y + (avatar_size - name_h) // 2
+
+        draw.text((name_x, name_y), display_name, fill="white", font=bold_font)
+
+        badge_size = int(name_h * 0.85)
+        badge_x = name_x + name_w + 8
+        badge_y = name_y + (name_h - badge_size) // 2
+        draw_verified_badge(draw, badge_x, badge_y, badge_size)
+
+        if handle:
             handle_text = handle if handle.startswith("@") else f"@{handle}"
-            handle_str = Cocoa.NSAttributedString.alloc().initWithString_attributes_(handle_text, handle_attrs)
-            handle_y = name_y - handle_str.size().height - 2
-            handle_str.drawAtPoint_(Cocoa.NSMakePoint(name_x, handle_y))
+            handle_y = name_y + name_h + 4
+            draw.text(
+                (name_x, handle_y),
+                handle_text,
+                fill=hex_to_rgb("71767B"),
+                font=handle_font,
+            )
 
-    Cocoa.NSGraphicsContext.restoreGraphicsState()
+        cur_y += profile_section_h
 
-    png_data = rep.representationUsingType_properties_(Cocoa.NSBitmapImageFileTypePNG, {})
-    png_data.writeToFile_atomically_(output_path, True)
+    for i, line in enumerate(lines):
+        y = cur_y + i * line_height
+        draw.text((padding_x, y), line, fill="white", font=body_font)
 
+    img.convert("RGB").save(output_path, "PNG")
     print(img_h)
-
-
-def _draw_placeholder_avatar(x, y, size):
-    """Draw a gray circle as avatar placeholder."""
-    hex_to_nscolor("333333").setFill()
-    circle = Cocoa.NSBezierPath.bezierPathWithOvalInRect_(
-        Cocoa.NSMakeRect(x, y, size, size)
-    )
-    circle.fill()
-
-    icon_font = Cocoa.NSFont.fontWithName_size_("HelveticaNeue", size * 0.5)
-    if icon_font is None:
-        icon_font = Cocoa.NSFont.systemFontOfSize_(size * 0.5)
-    icon_attrs = {
-        Cocoa.NSFontAttributeName: icon_font,
-        Cocoa.NSForegroundColorAttributeName: hex_to_nscolor("888888"),
-    }
-    icon = Cocoa.NSAttributedString.alloc().initWithString_attributes_("\U0001F464", icon_attrs)
-    icon_size = icon.size()
-    icon.drawAtPoint_(Cocoa.NSMakePoint(
-        x + (size - icon_size.width) / 2,
-        y + (size - icon_size.height) / 2,
-    ))
 
 
 if __name__ == "__main__":
